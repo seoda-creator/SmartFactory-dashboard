@@ -731,7 +731,7 @@ if tab == " 대시보드":
     st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------
-# 이상치 탐지 탭 
+# 이상치 탐지 탭 (경로 자동탐색 + 파일 유연매칭 적용 최종본)
 # -----------------------------
 elif tab == " 이상치 탐지":
     from pathlib import Path
@@ -739,15 +739,57 @@ elif tab == " 이상치 탐지":
     import pandas as pd
     import plotly.express as px
     import plotly.graph_objects as go
-    from streamlit_plotly_events import plotly_events 
+    # from streamlit_plotly_events import plotly_events  # 필요시 사용
 
     st.markdown("# 🖥️ Anomaly Detection  ↩︎")
     st.caption("공정 내 주요 변수의 이상 변동 탐지, 이상치 패턴 모니터링")
-    
-    TRAIN_DIR = Path("./train_ml_imputed")
-    TEST_DIR  = Path("./test_ml_imputed")
-    OOF_DIR   = Path("./yq_cls_out")  # 있을 때만 KPI/TEST 사용
 
+    # ========= (NEW) 데이터 루트 자동 탐색 =========
+    def _pick_data_root() -> Path:
+        here = Path(__file__).resolve().parent
+        cws  = Path.cwd().resolve()
+        cand = [here, cws, here.parent]  # app.py 옆/현재 작업폴더/상위 폴더
+        for base in cand:
+            if (base / "train_ml_imputed").exists() and (base / "test_ml_imputed").exists():
+                return base
+        return cws
+
+    _BASE = _pick_data_root()
+    TRAIN_DIR = (_BASE / "train_ml_imputed").resolve()
+    TEST_DIR  = (_BASE / "test_ml_imputed").resolve()
+    OOF_DIR   = (_BASE / "yq_cls_out").resolve()
+
+    # ========= (NEW) 파일 유연 매칭 =========
+    def _find_train_file(train_dir: Path, sel_line: str, product: str, expected: str) -> Path | None:
+        # 1) 정확 매칭
+        p = (train_dir / expected)
+        if p.exists():
+            return p
+        # 2) 대소문자/확장자 변형
+        cand_names = {
+            expected,
+            expected.lower(),
+            expected.upper(),
+            expected.replace(".csv", ".CSV"),
+            expected.replace(".CSV", ".csv"),
+        }
+        for name in cand_names:
+            q = train_dir / name
+            if q.exists():
+                return q
+        # 3) 패턴 매칭(이름 약간 달라도)
+        pats = [
+            f"{sel_line}_{product}_ml_ready*.csv",
+            f"{sel_line}_{product}*ready*.csv",
+            f"*{sel_line}*{product}*ready*.csv",
+        ]
+        for pat in pats:
+            hits = sorted(train_dir.glob(pat))
+            if hits:
+                return hits[0]
+        return None
+
+    # ---------- 라인/파일 매핑 ----------
     line_map = {
         "T010305": ("T010305_A_31_ml_ready.csv", "A_31"),
         "T010306": ("T010306_A_31_ml_ready.csv", "A_31"),
@@ -757,49 +799,7 @@ elif tab == " 이상치 탐지":
         "T100306": ("T100306_N_31_ml_ready.csv", "N_31"),
     }
 
-    combo_vars = {
-        "T010305_A_31": [
-            ("C_002",          "메인 챔버 압력"),
-            ("C_016_ma_w3",    "이온 에너지(MA3)"),
-            ("C_030_std_w5",   "소비 에너지(STD5)"),
-            ("C_015_ma_w3",    "플라즈마 전류(MA3)"),
-            ("C_015_std_w3",   "플라즈마 전류(STD3)"),
-        ],
-        "T010306_A_31": [
-            ("C_004_std_w4",   "반응가스 유량(STD4)"),
-            ("C_016_std_w3",   "이온 밀도(STD3)"),
-            ("C_014_std_w4",   "RF 순방향 전력(STD4)"),
-            ("C_022_std_w4",   "보조 챔버 압력(STD4)"),
-        ],
-        "T050304_A_31": [
-            ("C_014_ma_w6",    "RF 순방향 전력(MA6)"),
-            ("C_013_ma_w6",    "RF 반사 전력(MA6)"),
-            ("C_029",          "소비 에너지"),
-            ("C_010",          "RF 전력(1)"),
-            ("C_011_std_w4",   "RF 전력(2STD4)"),
-        ],
-        "T050307_A_31": [
-            ("C_004_std_w6",   "가스 유량(STD6)"),
-            ("C_015",          "이온 에너지"),
-            ("C_025_ma_w6",    "스테이지 온도(MA6)"),
-            ("C_025_std_w6",   "스테이지 온도(STD6)"),
-        ],
-        "T100304_N_31": [
-            ("C_009_ma_w3",    "가스 제어 신호(MA3)"),
-            ("C_022_std_w4",   "냉각라인 온도(STD4)"),
-            ("C_016_std_w6",   "이온 에너지(STD6)"),
-            ("C_014_std_w6",   "RF 순방향 전력(STD6)"),
-            ("C_023_std_w5",   "스테이지 온도(STD5)"),
-        ],
-        "T100306_N_31": [
-            ("C_025_std_w3",   "공정 소비 전력(STD3)"),
-            ("C_012_ma_w3",    "RF 반사 전력(MA3)"),
-            ("C_005_ma_w5",    "챔버 온도(MA5)"),
-            ("C_018_std_w4",   "펌프 부하(STD4)"),
-        ],
-    }
-
-    # === (NEW) 조합별 선정 피처 & 고정 임계값 ===
+    # (추천 피처 / 조합별 임계값)
     FEATURE_MAP = {
         "T010305_A_31": ["C_004_ma_w6","C_009_ma_w5","C_013_ma_w6","C_014_ma_w6","C_017_ma_w6","C_021_ma_w6","C_028_ma_w4","C_030_ma_w4","C_033_ma_w4","C_034_ma_w4","C_036_ma_w4","C_003_std_w6","C_004_std_w3","C_014_std_w6","C_017_std_w3","C_021_std_w6","C_025_std_w5","C_028_std_w5","C_033_std_w6","C_034_std_w5","C_036_std_w5","C_016_std_w6"],
         "T010306_A_31": ["C_002_ma_w6","C_013_ma_w3","C_028_ma_w6","C_032_ma_w6","C_033_ma_w6","C_034_ma_w6","C_027_ma_w3","C_006_ma_w3","C_011_std_w5","C_017_std_w3","C_024_std_w4","C_016_std_w3","C_034_std_w5","C_027_std_w4","C_006_std_w3"],
@@ -818,76 +818,41 @@ elif tab == " 이상치 탐지":
     }
 
     # -----------------------------
-    # 제목 + LINE 선택 콤보 (가로 정렬)
+    # 제목 + LINE 선택(가로 정렬)
     # -----------------------------
-    col1, col2 = st.columns([7, 1])  # 왼쪽(제목) : 오른쪽(콤보박스) 비율 조정
-
+    col1, col2 = st.columns([7, 1])
     with col1:
-        st.markdown(" ")  
-
+        st.markdown(" ")
     with col2:
         all_lines = sorted(list(line_map.keys()))
         sel_line = st.selectbox(" ", all_lines, index=0, key="ml_line_sel", label_visibility="collapsed")
         train_fname, product = line_map.get(sel_line, (None, None))
         combo_key = f"{sel_line}_{product}" if product else None
 
-    # KPI/TEST (있을 때만)
-    # ===== (KPI 블록 교체 후 한 줄형으로 수정) =====
-
-    # ── 작게 보이는 배지 스타일
+    # ── KPI/TEST (있을 때만)
     st.markdown("""
     <style>
-    .mini-kpis.stretch{
-    display:flex; flex-wrap:nowrap; gap:14px; align-items:center;
-    justify-content:space-between; overflow-x:auto; padding:6px 2px;
-    }
-    .mini-chip{
-    flex:1; background:#0b1326; border:1px solid var(--border);
-    border-radius:999px; padding:12px 20px; height:50px;
-    color:#dce8ff; font-weight:600; white-space:nowrap;
-    display:flex; align-items:center; justify-content:center;
-    box-shadow:0 0 8px rgba(37,194,255,0.15); transition:all .2s ease;
-    }
-    .mini-chip:hover{ transform:scale(1.03); box-shadow:0 0 16px rgba(37,194,255,.35); }
-
-    /* 라벨(왼쪽) */
-    .kpi-label{ opacity:.85; }
-
-    /* 숫자(오른쪽) — 여기만 글로우 */
-    .kpi-val{ margin-left:6px; font-weight:800; font-size:18px; }
-
-    /* Train 숫자 파랑 글로우 */
-    .kpi-val.train{
-    color:#25c2ff; text-shadow:0 0 10px rgba(37,194,255,.85), 0 0 20px rgba(37,194,255,.35);
-    }
-
-    /* Test 숫자 오렌지 글로우 */
-    .kpi-val.test{
-    color:#ffb86b; text-shadow:0 0 10px rgba(255,184,107,.85), 0 0 20px rgba(255,184,107,.35);
-    }
+    .mini-kpis.stretch{display:flex;gap:14px;align-items:center;overflow-x:auto;padding:6px 2px}
+    .mini-chip{flex:1;background:#0b1326;border:1px solid var(--border);border-radius:999px;padding:12px 20px;height:50px;color:#dce8ff;font-weight:600;white-space:nowrap;display:flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(37,194,255,.15)}
+    .kpi-label{opacity:.85}.kpi-val{margin-left:6px;font-weight:800;font-size:18px}
+    .kpi-val.train{color:#25c2ff;text-shadow:0 0 10px rgba(37,194,255,.85),0 0 20px rgba(37,194,255,.35)}
+    .kpi-val.test{color:#ffb86b;text-shadow:0 0 10px rgba(255,184,107,.85),0 0 20px rgba(255,184,107,.35)}
     </style>
     """, unsafe_allow_html=True)
 
-
-    # KPI/TEST (있을 때만) — 단일 expander로 변경
     try:
         oof_glob = list(OOF_DIR.glob(f"oof_summary_{sel_line}_{product}*.csv"))
         test_pred_glob = list(OOF_DIR.glob(f"test_pred_{sel_line}_{product}*.csv"))
-
         if oof_glob and test_pred_glob:
             oof_df  = pd.read_csv(oof_glob[0])
             test_df = pd.read_csv(test_pred_glob[0])
-
             from sklearn.metrics import f1_score
             y_true   = pd.to_numeric(oof_df["Y_Class"], errors="coerce")
             y_pred   = pd.to_numeric(oof_df["y_direct_clf"], errors="coerce")
             macro    = f1_score(y_true, y_pred, average="macro",    zero_division=0)
             weighted = f1_score(y_true, y_pred, average="weighted", zero_division=0)
             micro    = f1_score(y_true, y_pred, average="micro",    zero_division=0)
-
             cnt = test_df["y_direct_clf"].value_counts().reindex([0,1,2], fill_value=0)
-
-            # 📎 한 줄 KPI (expander 하나만)
             with st.expander("📎 모델 성능 요약", expanded=False):
                 st.markdown(
                     "<div class='mini-kpis stretch'>"
@@ -897,660 +862,388 @@ elif tab == " 이상치 탐지":
                     f"<div class='mini-chip'><span class='kpi-label'>Class 0:</span><span class='kpi-val test'>{int(cnt.loc[0])}</span></div>"
                     f"<div class='mini-chip'><span class='kpi-label'>Class 1:</span><span class='kpi-val test'>{int(cnt.loc[1])}</span></div>"
                     f"<div class='mini-chip'><span class='kpi-label'>Class 2:</span><span class='kpi-val test'>{int(cnt.loc[2])}</span></div>"
-                    "</div>",
-                    unsafe_allow_html=True
+                    "</div>", unsafe_allow_html=True
                 )
         else:
             st.info("OOF/Test 결과가 없어 KPI는 생략합니다.")
     except Exception as e:
         st.warning(f"KPI 오류: {e}")
 
-        if chips:
-            html_line = '<div class="mini-kpis stretch">' + " ".join(chips) + '</div>'
-            st.markdown(html_line, unsafe_allow_html=True)
-        else:
-            st.caption("표시할 KPI 데이터가 없습니다.")
-
     # ============= Train/Test Y_Quality 시계열 =============
     st.markdown(" ")
     st.markdown("### 📈 품질(Y_Quality) 추이")
 
     try:
-        train_fp = TRAIN_DIR / train_fname
-        test_fp  = TEST_DIR  / f"test_ml_{sel_line}_{product}.csv"
+        # (NEW) 유연 매칭으로 train 파일 찾기
+        expected_name = train_fname if train_fname else ""
+        train_fp = _find_train_file(TRAIN_DIR, sel_line, product or "", expected_name) if train_fname else None
+        test_fp  = (TEST_DIR / f"test_ml_{sel_line}_{product}.csv") if product else None
 
-        if not train_fp.exists():
-            st.warning("Train 데이터가 없습니다.")
+        if (train_fp is None) or (not train_fp.exists()):
+            st.warning(f"Train 데이터가 없습니다.\n- 데이터 루트: {_BASE}\n- 기대 파일: {expected_name}")
+            with st.expander("디버그: train_ml_imputed 파일목록", expanded=False):
+                try:
+                    names = [p.name for p in list(TRAIN_DIR.glob("*"))[:100]]
+                    st.code("\n".join(names) if names else "(비었습니다)")
+                except Exception as _e:
+                    st.write(_e)
+            st.stop()
+
+        df_train = pd.read_csv(train_fp)
+        df_test  = (pd.read_csv(test_fp) if (test_fp and test_fp.exists()) else pd.DataFrame())
+
+        # --- 안전 변환 ---
+        yq_train  = pd.to_numeric(df_train.get("Y_Quality", pd.Series(dtype=float)), errors="coerce").astype(float).to_numpy()
+        cls_train = pd.to_numeric(df_train.get("Y_Class",   pd.Series(dtype=float)), errors="coerce").astype("Int64")
+
+        # x축 결정(시간/인덱스)
+        if "TIMESTAMP" in df_train.columns:
+            xs_train = pd.to_datetime(df_train["TIMESTAMP"], errors="coerce")
+            if xs_train.notna().mean() < 0.8 or xs_train.nunique(dropna=True) < max(10, int(len(xs_train)*0.1)):
+                x_is_time, xs_train = False, np.arange(len(yq_train))
+            else:
+                x_is_time = True
         else:
-            df_train = pd.read_csv(train_fp)
-            df_test  = pd.read_csv(test_fp) if test_fp.exists() else pd.DataFrame()
+            x_is_time, xs_train = False, np.arange(len(yq_train))
+        x_train = pd.to_datetime(xs_train, errors="coerce") if x_is_time else np.arange(len(yq_train))
 
-            # --- 안전 변환: 값은 반드시 float ndarray로 ---
-            yq_train = pd.to_numeric(df_train.get("Y_Quality", pd.Series(dtype=float)), errors="coerce").astype(float).to_numpy()
-            cls_train = pd.to_numeric(df_train.get("Y_Class", pd.Series(dtype=float)), errors="coerce").astype("Int64")
-
-            # x축 결정(시간 or 인덱스)
-            if "TIMESTAMP" in df_train.columns:
-                xs_train = pd.to_datetime(df_train["TIMESTAMP"], errors="coerce")
-                # 시간 품질이 떨어지면 인덱스로 폴백
-                if xs_train.notna().mean() < 0.8 or xs_train.nunique(dropna=True) < max(10, int(len(xs_train)*0.1)):
-                    x_is_time = False
-                    xs_train = np.arange(len(yq_train))
-                else:
-                    x_is_time = True
+        # test 이어붙이기
+        if not df_test.empty:
+            yq_test = pd.to_numeric(df_test.get("Y_Quality", pd.Series(dtype=float)), errors="coerce").astype(float).to_numpy()
+            if "TIMESTAMP" in df_test.columns and x_is_time:
+                xs_test = pd.to_datetime(df_test["TIMESTAMP"], errors="coerce")
+                if xs_test.notna().mean() < 0.8:
+                    x_is_time, xs_test = False, np.arange(len(yq_train), len(yq_train) + len(yq_test))
             else:
-                xs_train = np.arange(len(yq_train))
-                x_is_time = False
+                xs_test = np.arange(len(yq_train), len(yq_train) + len(yq_test))
+        else:
+            yq_test, xs_test = None, None
 
-            # 공통 x축(모든 trace가 공유)
-            x_train = pd.to_datetime(xs_train, errors="coerce") if x_is_time else np.arange(len(yq_train))
+        # ===== SPC 알람 =====
+        _center = float(np.nanmean(yq_train))
+        _sigma  = float(np.nanstd(yq_train, ddof=1))
+        flags_df, _m, _s = spc_flags(yq_train, mean=_center, sigma=_sigma)
+        flags_df = flags_df.reindex(range(len(yq_train))).fillna(False)
+        alarm_mask = flags_df["ANY"].to_numpy()
+        alarm_df = pd.DataFrame({
+            "X": x_train,
+            "Y_Quality": yq_train,
+            "R1_3sigma": flags_df["R1_3sigma"].to_numpy(),
+            "R2_run9":  flags_df["R2_run9"].to_numpy(),
+            "R3_2of3_over2sigma": flags_df["R3_2of3_over2sigma"].to_numpy(),
+        }).iloc[alarm_mask].copy()
+        if not alarm_df.empty:
+            rule_cols = ["R1_3sigma","R2_run9","R3_2of3_over2sigma"]
+            alarm_df["RULES"] = alarm_df[rule_cols].apply(lambda r: ",".join([c for c in rule_cols if r[c]]), axis=1)
 
-            # test (있으면 뒤에 이어붙이기)
-            if not df_test.empty:
-                yq_test = pd.to_numeric(df_test.get("Y_Quality", pd.Series(dtype=float)), errors="coerce").astype(float).to_numpy()
-                if "TIMESTAMP" in df_test.columns and x_is_time:
-                    xs_test = pd.to_datetime(df_test["TIMESTAMP"], errors="coerce")
-                    if xs_test.notna().mean() < 0.8:
-                        # 시간 품질이 안 좋으면 인덱스로
-                        xs_test = np.arange(len(yq_train), len(yq_train) + len(yq_test))
-                        x_is_time = False
-                else:
-                    xs_test = np.arange(len(yq_train), len(yq_train) + len(yq_test))
-            else:
-                yq_test = None
-                xs_test = None
-
-            # ===== SPC 알람 계산 =====
-            _center = float(np.nanmean(yq_train))
-            _sigma  = float(np.nanstd(yq_train, ddof=1))
-            flags_df, _m, _s = spc_flags(yq_train, mean=_center, sigma=_sigma)
-            flags_df = flags_df.reindex(range(len(yq_train))).fillna(False)
-
-            alarm_mask = flags_df["ANY"].to_numpy()
-            # 공통 x축으로 알람 df 구성 (시간이면 datetime, 아니면 index)
-            alarm_df = pd.DataFrame({
-                "X": x_train,
-                "Y_Quality": yq_train,
-                "R1_3sigma": flags_df["R1_3sigma"].to_numpy(),
-                "R2_run9": flags_df["R2_run9"].to_numpy(),
-                "R3_2of3_over2sigma": flags_df["R3_2of3_over2sigma"].to_numpy(),
-            }).iloc[alarm_mask].copy()
-
-            if not alarm_df.empty:
-                rule_cols = ["R1_3sigma","R2_run9","R3_2of3_over2sigma"]
-                alarm_df["RULES"] = alarm_df[rule_cols].apply(
-                    lambda r: ",".join([c for c in rule_cols if r[c]]), axis=1
-                )
-            # ── 알람 히스토리 세션에 적재 (웹에서도 보이도록)
-            if "ml_alarm_hist" not in st.session_state:
-                st.session_state["ml_alarm_hist"] = pd.DataFrame(
-                    columns=["TIMESTAMP", "Y_Quality", "RULES"]
-                )
-            
-            if not alarm_df.empty:
-                if x_is_time:
-                    ts = pd.to_datetime(alarm_df["X"], errors="coerce")
-                else:
-                    ts = pd.Series(pd.NaT, index=alarm_df.index)  # 인덱스 축이면 시간은 NaT
-            
-                hist_add = pd.DataFrame({
-                    "TIMESTAMP": ts,
-                    "Y_Quality": alarm_df["Y_Quality"].values,
-                    "RULES": alarm_df.get("RULES", "")
-                })
-            
-                st.session_state["ml_alarm_hist"] = (
-                    pd.concat([st.session_state["ml_alarm_hist"], hist_add], ignore_index=True)
-                      .drop_duplicates(subset=["TIMESTAMP","Y_Quality"])
-                      .sort_values("TIMESTAMP")
-                )
-
-            # (옵션) 히스토리 유지
-            if "ml_alarm_hist" not in st.session_state:
-                st.session_state["ml_alarm_hist"] = pd.DataFrame(columns=["TIMESTAMP","Y_Quality","RULES"])
-            if not alarm_df.empty:
-                hist = st.session_state["ml_alarm_hist"]
-                st.session_state["ml_alarm_hist"] = (
-                    pd.concat(
-                        [hist,
-                        pd.DataFrame({
-                            "TIMESTAMP": alarm_df["X"] if x_is_time else pd.NaT,  # 시간축일 때만 기록
-                            "Y_Quality": alarm_df["Y_Quality"],
-                            "RULES": alarm_df["RULES"]
-                        })],
-                        ignore_index=True
-                    )
-                    .drop_duplicates(subset=["TIMESTAMP"])
-                    .sort_values("TIMESTAMP")
-                )
-
-            # y축 범위
-            valid_train = np.isfinite(yq_train)
-            if valid_train.any():
-                y_min = float(np.nanmin(yq_train[valid_train]))
-                y_max = float(np.nanmax(yq_train[valid_train]))
-            else:
-                y_min, y_max = 0.0, 1.0
-            pad = max(1e-3, (y_max - y_min) * 0.1)
-            y_range = [y_min - pad, y_max + pad]
-
-            # ----- Figure (이상치 블록과 동일한 스타일로 통일) -----
-            fig_yq = go.Figure()
-
-            # UCL/LCL (클래스 경계 기반)
-            try:
-                class_mins  = df_train.groupby("Y_Class")["Y_Quality"].min().sort_index()
-                class_maxs  = df_train.groupby("Y_Class")["Y_Quality"].max().sort_index()
-                if len(class_mins) >= 3 and len(class_maxs) >= 3:
-                    lcl = (class_maxs.iloc[0] + class_mins.iloc[1]) / 2
-                    ucl = (class_maxs.iloc[1] + class_mins.iloc[2]) / 2
-                else:
-                    lcl, ucl = None, None
-
-                if lcl is not None:
-                    fig_yq.add_hline(
-                        y=lcl, line_color="#FFBC3E", line_dash="dot", line_width=2.5, opacity=0.9,
-                        annotation_text=f"LCL={lcl:.4f}", annotation_position="bottom right",
-                        annotation_font_color="#FFBC3E"
-                    )
-                if ucl is not None:
-                    fig_yq.add_hline(
-                        y=ucl, line_color="#FFBC3E", line_dash="dot", line_width=2.5, opacity=0.9,
-                        annotation_text=f"UCL={ucl:.4f}", annotation_position="top right",
-                        annotation_font_color="#FFB52D"
-                    )
-            except Exception as e:
-                st.warning(f"UCL/LCL 계산 오류: {e}")
-
-            # 1) 본선 라인 (라인+마커로 통일)
-            fig_yq.add_trace(go.Scatter(
-                x=x_train, y=yq_train,
-                mode="lines+markers",
-                line=dict(color="#4AC6D9", width=2),
-                marker=dict(size=5),
-                name="Train Y_Quality",
-                hovertemplate="x=%{x}<br>Y_Quality=%{y:.6f}<extra></extra>",
-                showlegend=True
-            ))
-
-            # === 실제 불량/알람/동시발생(근접 매칭) ===
-            mask_def = (cls_train.isin([0, 2]).fillna(False).to_numpy()
-                        if not cls_train.isna().all() else np.zeros(len(yq_train), bool))
-            def_x_all = np.array(x_train)[mask_def] if mask_def.any() else np.array([])
-            def_y_all = yq_train[mask_def]          if mask_def.any() else np.array([])
-
-            if 'alarm_df' in locals() and not alarm_df.empty:
-                alarm_x_all = alarm_df["X"].to_numpy()
-                alarm_y_all = alarm_df["Y_Quality"].to_numpy()
-            else:
-                alarm_x_all = np.array([]); alarm_y_all = np.array([])
-
-            # 근접 매칭 (시간: ±15분, 인덱스: ±1)
-            def _to_num(arr, is_time):
-                if arr.size == 0: return np.array([], dtype="int64")
-                return pd.to_datetime(arr, errors="coerce").astype("int64") if is_time else np.asarray(arr, dtype="int64")
-
-            def_num   = _to_num(def_x_all,   x_is_time)
-            alarm_num = _to_num(alarm_x_all, x_is_time)
-            tol = np.int64(15*60*1e9) if x_is_time else np.int64(1)
-
-            both_mask_def   = np.zeros(len(def_num), dtype=bool)
-            both_mask_alarm = np.zeros(len(alarm_num), dtype=bool)
-            i = j = 0
-            while i < len(def_num) and j < len(alarm_num):
-                diff = alarm_num[j] - def_num[i]
-                if abs(diff) <= tol:
-                    both_mask_def[i]   = True
-                    both_mask_alarm[j] = True
-                    i += 1; j += 1
-                elif diff < 0:
-                    j += 1
-                else:
-                    i += 1
-
-            def_only_x = def_x_all[~both_mask_def] if def_x_all.size else []
-            def_only_y = def_y_all[~both_mask_def] if def_y_all.size else []
-            both_x     = def_x_all[both_mask_def]  if def_x_all.size else []
-            both_y     = def_y_all[both_mask_def]  if def_y_all.size else []
-
-            alarm_only_x = alarm_x_all[~both_mask_alarm] if alarm_x_all.size else []
-            alarm_only_y = alarm_y_all[~both_mask_alarm] if alarm_y_all.size else []
-
-            # 2) 불량 only
-            if len(def_only_x):
-                fig_yq.add_trace(go.Scatter(
-                    x=def_only_x, y=def_only_y,
-                    mode="markers",
-                    marker=dict(color="#FA2C7B", size=9, symbol="circle"),
-                    name="불량(Class 0·2)",
-                    hovertemplate="x=%{x}<br>Y=%{y:.6f}<extra></extra>",
-                    showlegend=True
-                ))
-
-            # 3) 알람 only
-            if len(alarm_only_x):
-                fig_yq.add_trace(go.Scatter(
-                    x=alarm_only_x, y=alarm_only_y,
-                    mode="markers",
-                    marker=dict(color="#FF6FD4", size=9, symbol="diamond",
-                                line=dict(width=0, color="#E7FFA4")),
-                    name="SPC Alarm",
-                    hovertemplate="알람 시점=%{x}<br>Y=%{y:.6f}<extra></extra>",
-                    showlegend=True
-                ))
-
-            # 4) 동시발생
-            if len(both_x):
-                fig_yq.add_trace(go.Scatter(
-                    x=both_x, y=both_y,
-                    mode="markers",
-                    marker=dict(color="#FFD166", size=11, symbol="star"),
-                    name="이상치·불량 동시발생",
-                    hovertemplate="동시발생=%{x}<br>Y=%{y:.6f}<extra></extra>",
-                    showlegend=True
-                ))
-
-            # 5) Test 라인 (있으면)
-            if yq_test is not None and xs_test is not None:
-                fig_yq.add_trace(go.Scatter(
-                    x=xs_test, y=yq_test,
-                    mode="lines",
-                    line=dict(color="#FFD700", width=2, dash="dot"),
-                    name="Test 예측 Y_Quality",
-                    hovertemplate="x=%{x}<br>Y_Quality=%{y:.6f}<extra></extra>",
-                    showlegend=True
-                ))
-
-            # 축/레이아웃
-            if x_is_time:
-                fig_yq.update_xaxes(
-                    showgrid=True, gridcolor="#2b3b59",
-                    tickformat="%m/%d\n%H:%M",
-                    rangeslider=dict(visible=False),
-                    zeroline=False
-                )
-                x_title = "시간"
-            else:
-                npts = len(yq_train) + (len(yq_test) if yq_test is not None else 0)
-                dtick_idx = max(1, int(npts / 10))
-                fig_yq.update_xaxes(
-                    showgrid=True, gridcolor="#2b3b59",
-                    tickmode="linear", dtick=dtick_idx,
-                    rangeslider=dict(visible=False),
-                    zeroline=False
-                )
-                x_title = "시점(Index)"
-
-            fig_yq.update_yaxes(showgrid=True, gridcolor="#2b3b59", range=y_range, zeroline=False)
-
-            fig_yq.update_layout(
-                height=320,
-                template="plotly_dark",
-                margin=dict(l=20, r=20, t=40, b=20),
-                paper_bgcolor="#101a30", plot_bgcolor="#101a30",
-                xaxis_title=x_title,
-                yaxis_title="Y_Quality",
-                font=dict(color="white", size=13),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                            bgcolor="rgba(0,0,0,0)")
+        # ── 알람 히스토리 세션 적재
+        if "ml_alarm_hist" not in st.session_state:
+            st.session_state["ml_alarm_hist"] = pd.DataFrame(columns=["TIMESTAMP","Y_Quality","RULES"])
+        if not alarm_df.empty:
+            ts = pd.to_datetime(alarm_df["X"], errors="coerce") if x_is_time else pd.Series(pd.NaT, index=alarm_df.index)
+            hist_add = pd.DataFrame({"TIMESTAMP": ts, "Y_Quality": alarm_df["Y_Quality"].values, "RULES": alarm_df.get("RULES","")})
+            st.session_state["ml_alarm_hist"] = (
+                pd.concat([st.session_state["ml_alarm_hist"], hist_add], ignore_index=True)
+                .drop_duplicates(subset=["TIMESTAMP","Y_Quality"])
+                .sort_values("TIMESTAMP")
             )
 
-            st.plotly_chart(fig_yq, use_container_width=True)
+        # y축 범위
+        valid_train = np.isfinite(yq_train)
+        if valid_train.any():
+            y_min = float(np.nanmin(yq_train[valid_train])); y_max = float(np.nanmax(yq_train[valid_train]))
+        else:
+            y_min, y_max = 0.0, 1.0
+        pad = max(1e-3, (y_max - y_min) * 0.1)
+        y_range = [y_min - pad, y_max + pad]
 
-            # ================== 이상치 탐지 결과 시각화 ==================
-            # ### ⛔ OLD BLOCK: 고정 σ=3 / IQR=1.5, 전체데이터 기반 임계값 (비활성화) START
-            if False:
-                st.markdown(" ")
-                # === 제목과 드롭다운을 한 줄에 나란히 배치 ===
-                col1, col2 = st.columns([7, 1])  # 비율 조정 (왼쪽 넓게)
-                with col1:
-                    st.markdown("### ⚙️ 이상치 탐지 모델 결과 (OLD)")
-                with col2:
-                    all_features = [c for c in df_train.columns if c.startswith("C_")]
-                    sel_feature = st.selectbox("📈 센서 선택", all_features, index=0, label_visibility="collapsed")
+        # ----- Figure -----
+        fig_yq = go.Figure()
 
-                if sel_feature in df_train.columns:
-                    y_feat = pd.to_numeric(df_train[sel_feature], errors="coerce").astype(float)
-                    xs_time = pd.to_datetime(df_train["TIMESTAMP"], errors="coerce") if "TIMESTAMP" in df_train.columns else np.arange(len(y_feat))
-
-                    # === 정규성 검정 후 이상치 탐지 ===
-                    from scipy.stats import shapiro
-                    try:
-                        s_norm = y_feat.dropna().to_numpy()
-                        stat, p = shapiro(s_norm[:5000])
-                        is_normal = p > 0.05
-                    except Exception:
-                        is_normal = False
-
-                    # 임계값 (OLD: 고정)
-                    sigma_thresh = 3.0
-                    iqr_thresh = 1.5
-
-                    if is_normal:
-                        mean, sd = np.nanmean(s_norm), np.nanstd(s_norm)
-                        lower, upper = mean - sigma_thresh*sd, mean + sigma_thresh*sd
-                        rule_name = f"정규분포 σ기준({sigma_thresh})"
-                    else:
-                        q1, q3 = np.percentile(s_norm, [25, 75])
-                        iqr = q3 - q1
-                        lower, upper = q1 - iqr_thresh*iqr, q3 + iqr_thresh*iqr
-                        rule_name = f"비정규 IQR기준({iqr_thresh})"
-
-                    # 이상치 마스크
-                    outlier_mask = (y_feat < lower) | (y_feat > upper)
-
-                    # === 그래프 그리기 (OLD) ===
-                    fig_feat = go.Figure()
-                    fig_feat.add_trace(go.Scatter(
-                        x=xs_time, y=y_feat,
-                        mode="lines+markers",
-                        line=dict(color="#4AC6D9", width=2),
-                        name=sel_feature,
-                        hovertemplate="시간=%{x}<br>값=%{y:.4f}<extra></extra>"
-                    ))
-
-                    if outlier_mask.any():
-                        fig_feat.add_trace(go.Scatter(
-                            x=np.array(xs_time)[outlier_mask],
-                            y=y_feat[outlier_mask],
-                            mode="markers",
-                            marker=dict(color="#FF6FD4", size=9, symbol="diamond"),
-                            name="이상치 탐지"
-                        ))
-
-                    # 실제 불량 점
-                    if "Y_Class" in df_train.columns:
-                        cls_train2 = pd.to_numeric(df_train["Y_Class"], errors="coerce").astype("Int64")
-                        mask_defect2 = cls_train2.isin([0, 2]).fillna(False).to_numpy()
-                        if mask_defect2.any():
-                            fig_feat.add_trace(go.Scatter(
-                                x=np.array(xs_time)[mask_defect2],
-                                y=y_feat[mask_defect2],
-                                mode="markers",
-                                marker=dict(color="#FF002B", size=9, symbol="circle"),
-                                name="불량(Class 0·2)"
-                            ))
-
-                    mask_both2 = mask_defect2 & ((y_feat < lower) | (y_feat > upper))
-                    fig_feat.add_trace(go.Scatter(
-                        x=np.array(xs_time)[mask_both2],
-                        y=y_feat[mask_both2],
-                        mode="markers",
-                        marker=dict(color="#FFD700", size=9, symbol="star"),
-                        name="이상치·불량 동시발생"
-                    ))
-
-                    # 상하한선
-                    fig_feat.add_hline(y=upper, line_color="#FFB52D", line_dash="dot",
-                                       annotation_text=f"UCL={upper:.4f}", annotation_font_color="#FFB52D")
-                    fig_feat.add_hline(y=lower, line_color="#FFB52D", line_dash="dot",
-                                       annotation_text=f"LCL={lower:.4f}", annotation_font_color="#FFB52D")
-
-                    fig_feat.update_layout(
-                        height=300,
-                        template="plotly_dark",
-                        margin=dict(l=30, r=30, t=40, b=30),
-                        title=f"           ↪   {sel_feature} 이상치 탐지 결과 (OLD: {rule_name})",
-                        xaxis_title="시간",
-                        yaxis_title=sel_feature,
-                        legend=dict(orientation="h", yanchor="bottom", y=1.05,
-                                    xanchor="right", x=1, bgcolor="rgba(0,0,0,0)",
-                                    font=dict(size=12, color="#E8E8E8"))
-                    )
-                    fig_feat.update_xaxes(tickformat="%m-%d")
-                    fig_feat.update_xaxes(showgrid=True, gridcolor="#2b3b59", zeroline=False)
-                    st.plotly_chart(fig_feat, use_container_width=True)
-            # ### ⛔ OLD BLOCK END
-
-            # ================== 이상치 탐지 모델 결과 시각화 (정상기반 임계값 + 조합별 적용) ==================
-            st.markdown(" ")
-            col1, col2 = st.columns([7, 1])
-            with col1:
-                st.markdown("### ⚙️ 이상치 탐지 모델 결과")
-            with col2:
-                # 🔁 전체 C_* 컬럼 표시하되, FEATURE_MAP에 포함된 추천 피처엔 ⭐ 표시
-                all_feats = [c for c in df_train.columns if str(c).startswith("C_")]
-                feat_reco = set(FEATURE_MAP.get(combo_key, []))  # 추천 피처 집합
-
-                # 드롭다운 표시용 이름 구성 (추천 피처엔 별표)
-                cand_feats_display = [
-                    f"{c} ⭐" if c in feat_reco else c
-                    for c in all_feats
-                ]
-
-                # Streamlit 드롭다운 (표시값은 별표 포함, 내부값은 실제 컬럼명)
-                sel_display = st.selectbox(
-                    "📈 센서 선택",
-                    cand_feats_display,
-                    index=0,
-                    label_visibility="collapsed",
-                    key=f"feat_all_{combo_key}"
-                )
-
-                # ⭐ 제거하고 실제 컬럼명으로 저장
-                sel_feature = sel_display.replace("⭐ ", "")
-
-            if sel_feature in df_train.columns:
-                y_feat  = pd.to_numeric(df_train[sel_feature], errors="coerce").astype(float)
-                xs_time = (pd.to_datetime(df_train["TIMESTAMP"], errors="coerce")
-                           if "TIMESTAMP" in df_train.columns else np.arange(len(y_feat)))
-
-                # (핵심) 정상(Class=1)만으로 임계값 학습
-                cls_col = "Y_Class"
-                normal_mask = pd.to_numeric(df_train.get(cls_col, 1), errors="coerce").fillna(1).astype(int).eq(1)
-                s_norm = y_feat[normal_mask].dropna().to_numpy()
-
-                # 조합별 고정 배수(없으면 기본값)
-                _th = THRESH_MAP.get(combo_key, {"sigma":3.0, "iqr":1.5})
-                sigma_k = float(_th["sigma"]); iqr_k = float(_th["iqr"])
-
-                # 정규성 검사(정상 데이터에서만)
-                from scipy.stats import shapiro
-                try:
-                    stat, p = shapiro(s_norm[:5000])
-                    is_normal = p > 0.05
-                except Exception:
-                    is_normal = False
-
-                # 임계값 계산
-                if is_normal and len(s_norm) > 3:
-                    mu, sd = float(np.mean(s_norm)), float(np.std(s_norm))
-                    lower, upper = mu - sigma_k*sd, mu + sigma_k*sd
-                    rule_name = f"정상기준 σ({sigma_k})"
-                else:
-                    if len(s_norm) >= 2:
-                        q1, q3 = np.percentile(s_norm, [25, 75])
-                        iqr = q3 - q1
-                    else:
-                        q1 = q3 = iqr = np.nan
-                    if not np.isfinite(iqr) or iqr == 0:
-                        lower, upper = np.nanmin(s_norm) if s_norm.size else np.nan, np.nanmax(s_norm) if s_norm.size else np.nan
-                    else:
-                        lower, upper = q1 - iqr_k*iqr, q3 + iqr_k*iqr
-                    rule_name = f"정상기준 IQR({iqr_k})"
-
-                # 이상치
-                outlier_mask = (y_feat < lower) | (y_feat > upper)
-
-                # 그림
-                fig_feat = go.Figure()
-                fig_feat.add_trace(go.Scatter(
-                    x=xs_time, y=y_feat,
-                    mode="lines+markers",
-                    line=dict(color="#4AC6D9", width=2),
-                    name=sel_feature,
-                    hovertemplate="시간=%{x}<br>값=%{y:.4f}<extra></extra>"
-                ))
-                if outlier_mask.any():
-                    fig_feat.add_trace(go.Scatter(
-                        x=np.array(xs_time)[outlier_mask],
-                        y=y_feat[outlier_mask],
-                        mode="markers",
-                        marker=dict(color="#FF6FD4", size=9, symbol="diamond"),
-                        name="이상치(모델 임계값)"
-                    ))
-
-                # 불량 표시 + 동시발생
-                mask_defect = pd.to_numeric(df_train.get("Y_Class", 1), errors="coerce").isin([0,2]).to_numpy()
-                if mask_defect.any():
-                    fig_feat.add_trace(go.Scatter(
-                        x=np.array(xs_time)[mask_defect],
-                        y=y_feat[mask_defect],
-                        mode="markers",
-                        marker=dict(color="#FF002B", size=9, symbol="circle"),
-                        name="불량(Class 0·2)"
-                    ))
-                both = mask_defect & outlier_mask.to_numpy()
-                if both.any():
-                    fig_feat.add_trace(go.Scatter(
-                        x=np.array(xs_time)[both],
-                        y=y_feat[both],
-                        mode="markers",
-                        marker=dict(color="#FFD700", size=10, symbol="star"),
-                        name="이상치·불량 동시발생"
-                    ))
-
-                # 상/하한선
-                if np.isfinite(lower):
-                    fig_feat.add_hline(y=lower, line_color="#FFB52D", line_dash="dot",
-                                       annotation_text=f"LCL={lower:.4f}", annotation_font_color="#FFB52D")
-                if np.isfinite(upper):
-                    fig_feat.add_hline(y=upper, line_color="#FFB52D", line_dash="dot",
-                                       annotation_text=f"UCL={upper:.4f}", annotation_font_color="#FFB52D")
-
-                fig_feat.update_layout(
-                    height=300, template="plotly_dark",
-                    margin=dict(l=30, r=30, t=40, b=30),
-                    title=f"           ↪   {sel_feature} 이상치 탐지 (조합 {combo_key}, {rule_name})",
-                    xaxis_title="시간", yaxis_title=sel_feature,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1,
-                                bgcolor="rgba(0,0,0,0)", font=dict(size=12, color="#E8E8E8"))
-                )
-                fig_feat.update_xaxes(showgrid=True, gridcolor="#2b3b59", zeroline=False, tickformat="%m-%d")
-                st.plotly_chart(fig_feat, use_container_width=True)
-                            
-            # ===== PATCH C-2: 알람 상세 & 원인 후보(라이트) =====
-            st.markdown("### 🧭 SPC ALARM")
-            if "ml_alarm_hist" not in st.session_state or st.session_state["ml_alarm_hist"].empty:
-                st.info("현재 SPC 룰 위반 알람이 없습니다.")
+        # UCL/LCL (가능할 때만)
+        try:
+            class_mins = df_train.groupby("Y_Class")["Y_Quality"].min().sort_index()
+            class_maxs = df_train.groupby("Y_Class")["Y_Quality"].max().sort_index()
+            if len(class_mins) >= 3 and len(class_maxs) >= 3:
+                lcl = (class_maxs.iloc[0] + class_mins.iloc[1]) / 2
+                ucl = (class_maxs.iloc[1] + class_mins.iloc[2]) / 2
             else:
-                hist = st.session_state["ml_alarm_hist"].copy()
-                sel = st.selectbox(
-                    "알람 시점",
-                    options=list(hist["TIMESTAMP"].dt.strftime("%Y-%m-%d %H:%M:%S")),
-                    index=len(hist)-1,
-                    key=f"ml_alarm_pick_{sel_line}"
-                )
-                pick_ts = pd.to_datetime(sel)
-                row = hist.loc[hist["TIMESTAMP"]==pick_ts].iloc[0]
-                _ucl_txt = f"{ucl:.4f}" if 'ucl' in locals() and ucl is not None else "-"
-                _lcl_txt = f"{lcl:.4f}" if 'lcl' in locals() and lcl is not None else "-"
-                st.write(f"- **Y**: `{row['Y_Quality']:.6f}`  | **UCL/LCL**: `{_ucl_txt}` / `{_lcl_txt}`")
-                if "RULES" in row and isinstance(row["RULES"], str):
-                    st.write(f"- **위반 룰**: `{row['RULES']}`")
+                lcl = ucl = None
+            if lcl is not None:
+                fig_yq.add_hline(y=lcl, line_color="#FFBC3E", line_dash="dot", line_width=2.5,
+                                 annotation_text=f"LCL={lcl:.4f}", annotation_position="bottom right",
+                                 annotation_font_color="#FFBC3E")
+            if ucl is not None:
+                fig_yq.add_hline(y=ucl, line_color="#FFBC3E", line_dash="dot", line_width=2.5,
+                                 annotation_text=f"UCL={ucl:.4f}", annotation_position="top right",
+                                 annotation_font_color="#FFB52D")
+        except Exception:
+            lcl = ucl = None
 
-                # ---- 원인 후보(인덱스 기반): 알람 기준 앞/뒤 K행 창 ----
-                try:
-                    exclude = {"TIMESTAMP","DATE","Y_Quality","Y_Class","__source__"}
-                    num_cols = [c for c in df_train.columns
-                                if c not in exclude and pd.api.types.is_numeric_dtype(df_train[c])]
+        # 본선
+        fig_yq.add_trace(go.Scatter(
+            x=x_train, y=yq_train, mode="lines+markers",
+            line=dict(color="#4AC6D9", width=2), marker=dict(size=5),
+            name="Train Y_Quality",
+            hovertemplate="x=%{x}<br>Y_Quality=%{y:.6f}<extra></extra>"
+        ))
 
-                    if len(num_cols) > 0:
-                        # 1) 알람 시점과 가장 가까운 "행 인덱스" 잡기
-                        if "TIMESTAMP" in df_train.columns and isinstance(pick_ts, pd.Timestamp):
-                            ts_all = pd.to_datetime(df_train["TIMESTAMP"], errors="coerce")
-                            idx0 = int((ts_all - pick_ts).abs().idxmin())
-                        else:
-                            if 'alarm_df' in locals() and not alarm_df.empty and "TIMESTAMP" in alarm_df.columns:
-                                cand = pd.to_datetime(alarm_df["TIMESTAMP"], errors="coerce")
-                                if pick_ts in set(cand):
-                                    idx0 = int(alarm_df.index[cand == pick_ts][0])
-                                else:
-                                    idx0 = int(alarm_df.index[-1])
-                            else:
-                                idx0 = len(df_train) // 2
+        # 불량/알람/동시
+        mask_def = (cls_train.isin([0, 2]).fillna(False).to_numpy()
+                    if not cls_train.isna().all() else np.zeros(len(yq_train), bool))
+        def_x_all = np.array(x_train)[mask_def] if mask_def.any() else np.array([])
+        def_y_all = yq_train[mask_def]          if mask_def.any() else np.array([])
 
-                        # 2) 창 크기
-                        K_BEFORE, K_AFTER = 5, 5
-                        BASE_SIZE = 20
-                        n = len(df_train)
-                        l = max(0, idx0 - K_BEFORE)
-                        r = min(n - 1, idx0 + K_AFTER)
+        alarm_x_all = alarm_df["X"].to_numpy() if not alarm_df.empty else np.array([])
+        alarm_y_all = alarm_df["Y_Quality"].to_numpy() if not alarm_df.empty else np.array([])
 
-                        win_df  = df_train.iloc[l:r+1].copy()
-                        base_r  = max(0, l - 1)
-                        base_l  = max(0, base_r - BASE_SIZE + 1)
-                        base_df = df_train.iloc[base_l:base_r+1].copy()
+        def _to_num(arr, is_time):
+            if arr.size == 0: return np.array([], dtype="int64")
+            return pd.to_datetime(arr, errors="coerce").astype("int64") if is_time else np.asarray(arr, dtype="int64")
 
-                        # 3) 지표 계산
-                        out = []
-                        y_win = pd.to_numeric(win_df["Y_Quality"], errors="coerce")
-                        for c in num_cols[:400]:
-                            s_now  = pd.to_numeric(win_df[c],  errors="coerce")
-                            s_base = pd.to_numeric(base_df[c], errors="coerce")
+        def_num   = _to_num(def_x_all,   x_is_time)
+        alarm_num = _to_num(alarm_x_all, x_is_time)
+        tol = np.int64(15*60*1e9) if x_is_time else np.int64(1)
 
-                            sigma_now  = float(s_now.std(ddof=1))
-                            sigma_base = float(s_base.std(ddof=1))
-                            if not np.isfinite(sigma_base) or sigma_base == 0:
-                                sigma_base = 1e-6  # 0 나눗셈 방지
+        both_mask_def   = np.zeros(len(def_num), dtype=bool)
+        both_mask_alarm = np.zeros(len(alarm_num), dtype=bool)
+        i = j = 0
+        while i < len(def_num) and j < len(alarm_num):
+            diff = alarm_num[j] - def_num[i]
+            if abs(diff) <= tol: both_mask_def[i]=True; both_mask_alarm[j]=True; i+=1; j+=1
+            elif diff < 0: j += 1
+            else: i += 1
 
-                            var_ratio  = sigma_now / sigma_base if np.isfinite(sigma_now) else np.nan
-                            corr = s_now.corr(y_win) if s_now.notna().sum() > 5 and y_win.notna().sum() > 5 else np.nan
-                            mean_jump = abs(s_now.mean() - s_base.mean())
+        def_only_x = def_x_all[~both_mask_def] if def_x_all.size else []
+        def_only_y = def_y_all[~both_mask_def] if def_y_all.size else []
+        both_x     = def_x_all[both_mask_def]  if def_x_all.size else []
+        both_y     = def_y_all[both_mask_def]  if def_x_all.size else []
+        alarm_only_x = alarm_x_all[~both_mask_alarm] if alarm_x_all.size else []
+        alarm_only_y = alarm_y_all[~both_mask_alarm] if alarm_y_all.size else []
 
-                            out.append((c, var_ratio, corr, mean_jump))
+        if len(def_only_x):
+            fig_yq.add_trace(go.Scatter(x=def_only_x, y=def_only_y, mode="markers",
+                                        marker=dict(color="#FA2C7B", size=9), name="불량(Class 0·2)"))
+        if len(alarm_only_x):
+            fig_yq.add_trace(go.Scatter(x=alarm_only_x, y=alarm_only_y, mode="markers",
+                                        marker=dict(color="#FF6FD4", size=9, symbol="diamond"),
+                                        name="SPC Alarm"))
+        if len(both_x):
+            fig_yq.add_trace(go.Scatter(x=both_x, y=both_y, mode="markers",
+                                        marker=dict(color="#FFD166", size=11, symbol="star"),
+                                        name="이상치·불량 동시발생"))
+        if yq_test is not None and xs_test is not None:
+            fig_yq.add_trace(go.Scatter(x=xs_test, y=yq_test, mode="lines",
+                                        line=dict(color="#FFD700", width=2, dash="dot"),
+                                        name="Test 예측 Y_Quality"))
 
-                        df_top5 = pd.DataFrame(out, columns=["feature","sigma_ratio","corr_with_y","mean_jump"]).dropna(how="all")
+        # 축/레이아웃
+        if x_is_time:
+            fig_yq.update_xaxes(showgrid=True, gridcolor="#2b3b59",
+                                tickformat="%m/%d\n%H:%M", rangeslider=dict(visible=False), zeroline=False)
+            x_title = "시간"
+        else:
+            npts = len(yq_train) + (len(yq_test) if yq_test is not None else 0)
+            fig_yq.update_xaxes(showgrid=True, gridcolor="#2b3b59",
+                                tickmode="linear", dtick=max(1, int(npts/10)),
+                                rangeslider=dict(visible=False), zeroline=False)
+            x_title = "시점(Index)"
+        fig_yq.update_yaxes(showgrid=True, gridcolor="#2b3b59", range=y_range, zeroline=False)
+        fig_yq.update_layout(
+            height=320, template="plotly_dark",
+            margin=dict(l=20, r=20, t=40, b=20),
+            paper_bgcolor="#101a30", plot_bgcolor="#101a30",
+            xaxis_title=x_title, yaxis_title="Y_Quality",
+            font=dict(color="white", size=13),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                        bgcolor="rgba(0,0,0,0)")
+        )
+        st.plotly_chart(fig_yq, use_container_width=True)
 
-                        # 스코어링
-                        if not df_top5.empty:
-                            df_top5["score1"] = df_top5["sigma_ratio"].clip(0, 5).fillna(0) * df_top5["corr_with_y"].abs().fillna(0)
-                            mj_min, mj_max = df_top5["mean_jump"].min(), df_top5["mean_jump"].max()
-                            df_top5["score_fb"] = (df_top5["mean_jump"] - mj_min) / (mj_max - mj_min + 1e-9)
-                            df_top5["score"] = np.where(df_top5["score1"] > 0, df_top5["score1"], df_top5["score_fb"])
-                            df_top5 = df_top5.sort_values("score", ascending=False).head(5)
+        # ================== 이상치 탐지 모델 결과 (정상기반 임계값 + 조합별 적용) ==================
+        st.markdown(" ")
+        col1, col2 = st.columns([7, 1])
+        with col1: st.markdown("### ⚙️ 이상치 탐지 모델 결과")
+        with col2:
+            all_feats = [c for c in df_train.columns if str(c).startswith("C_")]
+            feat_reco = set(FEATURE_MAP.get(combo_key, []))
+            disp = [f"{c} ⭐" if c in feat_reco else c for c in all_feats]
+            sel_display = st.selectbox("📈 센서 선택", disp, index=0, label_visibility="collapsed",
+                                       key=f"feat_all_{combo_key}")
+            sel_feature = sel_display.replace(" ⭐", "")
 
-                        st.caption(f"index window: [{l}:{r}] (win={len(win_df)}), base: [{base_l}:{base_r}] (base={len(base_df)})")
+        if sel_feature in df_train.columns:
+            y_feat  = pd.to_numeric(df_train[sel_feature], errors="coerce").astype(float)
+            xs_time = (pd.to_datetime(df_train["TIMESTAMP"], errors="coerce")
+                       if "TIMESTAMP" in df_train.columns else np.arange(len(y_feat)))
 
-                        # 센서명 매핑 & 표 출력
-                        sensor_map = load_sensor_map(sel_line, product) if 'load_sensor_map' in globals() else {}
-                        if not df_top5.empty and sensor_map:
-                            df_top5 = df_top5.copy()
-                            df_top5["feature_name"] = df_top5["feature"].map(sensor_map).fillna(df_top5["feature"])
-                            show_cols = ["feature","feature_name","sigma_ratio","corr_with_y","score"]
-                        else:
-                            show_cols = ["feature","sigma_ratio","corr_with_y","score"]
+            normal_mask = pd.to_numeric(df_train.get("Y_Class", 1), errors="coerce").fillna(1).astype(int).eq(1)
+            s_norm = y_feat[normal_mask].dropna().to_numpy()
 
-                        if df_top5.empty:
-                            st.info("해당 창에서 원인 후보가 비었습니다. K_BEFORE/K_AFTER 또는 BASE_SIZE를 키워보세요.")
-                        else:
-                            st.dataframe(df_top5[show_cols], use_container_width=True, height=220)
+            _th = THRESH_MAP.get(combo_key, {"sigma":3.0, "iqr":1.5})
+            sigma_k, iqr_k = float(_th["sigma"]), float(_th["iqr"])
 
-                            # 감지된 룰 파싱: 없으면 None
-                            detected_rule = None
-                            if 'row' in locals() and isinstance(row, pd.Series) and "RULES" in row and isinstance(row["RULES"], str) and len(row["RULES"]) > 0:
-                                detected_rule = str(row["RULES"]).split(",")[0].strip()
+            from scipy.stats import shapiro
+            try:
+                stat, p = shapiro(s_norm[:5000]); is_normal = p > 0.05
+            except Exception:
+                is_normal = False
 
-                            # (중략) df_top5 계산/표시까지 끝난 뒤, 요약 한 번 출력
-                            if 'df_top5' in locals() and isinstance(df_top5, pd.DataFrame) and not df_top5.empty:
-                                st.markdown("### ⚠️ SPC REPORT")
-                                sensor_map = load_sensor_map(sel_line, product) if 'load_sensor_map' in globals() else {}
-                                st.info(summarize_alarm_cause(df_top5[["feature","sigma_ratio","corr_with_y","score"]], detected_rule, sensor_map))
+            if is_normal and len(s_norm) > 3:
+                mu, sd = float(np.mean(s_norm)), float(np.std(s_norm))
+                lower, upper = mu - sigma_k*sd, mu + sigma_k*sd
+                rule_name = f"정상기준 σ({sigma_k})"
+            else:
+                if len(s_norm) >= 2:
+                    q1, q3 = np.percentile(s_norm, [25, 75]); iqr = q3 - q1
+                else:
+                    q1 = q3 = iqr = np.nan
+                if not np.isfinite(iqr) or iqr == 0:
+                    lower = np.nanmin(s_norm) if s_norm.size else np.nan
+                    upper = np.nanmax(s_norm) if s_norm.size else np.nan
+                else:
+                    lower, upper = q1 - iqr_k*iqr, q3 + iqr_k*iqr
+                rule_name = f"정상기준 IQR({iqr_k})"
 
+            outlier_mask = (y_feat < lower) | (y_feat > upper)
+
+            fig_feat = go.Figure()
+            fig_feat.add_trace(go.Scatter(
+                x=xs_time, y=y_feat, mode="lines+markers",
+                line=dict(color="#4AC6D9", width=2),
+                name=sel_feature,
+                hovertemplate="시간=%{x}<br>값=%{y:.4f}<extra></extra>"
+            ))
+            if outlier_mask.any():
+                fig_feat.add_trace(go.Scatter(
+                    x=np.array(xs_time)[outlier_mask], y=y_feat[outlier_mask],
+                    mode="markers", marker=dict(color="#FF6FD4", size=9, symbol="diamond"),
+                    name="이상치(모델 임계값)"
+                ))
+
+            mask_defect = pd.to_numeric(df_train.get("Y_Class", 1), errors="coerce").isin([0,2]).to_numpy()
+            if mask_defect.any():
+                fig_feat.add_trace(go.Scatter(
+                    x=np.array(xs_time)[mask_defect], y=y_feat[mask_defect],
+                    mode="markers", marker=dict(color="#FF002B", size=9),
+                    name="불량(Class 0·2)"
+                ))
+            both = mask_defect & outlier_mask.to_numpy()
+            if both.any():
+                fig_feat.add_trace(go.Scatter(
+                    x=np.array(xs_time)[both], y=y_feat[both],
+                    mode="markers", marker=dict(color="#FFD700", size=10, symbol="star"),
+                    name="이상치·불량 동시발생"
+                ))
+
+            if np.isfinite(lower):
+                fig_feat.add_hline(y=lower, line_color="#FFB52D", line_dash="dot",
+                                   annotation_text=f"LCL={lower:.4f}", annotation_font_color="#FFB52D")
+            if np.isfinite(upper):
+                fig_feat.add_hline(y=upper, line_color="#FFB52D", line_dash="dot",
+                                   annotation_text=f"UCL={upper:.4f}", annotation_font_color="#FFB52D")
+
+            fig_feat.update_layout(
+                height=300, template="plotly_dark",
+                margin=dict(l=30, r=30, t=40, b=30),
+                title=f"           ↪   {sel_feature} 이상치 탐지 (조합 {combo_key}, {rule_name})",
+                xaxis_title="시간", yaxis_title=sel_feature,
+                legend=dict(orientation="h", yanchor="bottom", y=1.05,
+                            xanchor="right", x=1, bgcolor="rgba(0,0,0,0)")
+            )
+            fig_feat.update_xaxes(showgrid=True, gridcolor="#2b3b59", zeroline=False, tickformat="%m-%d")
+            st.plotly_chart(fig_feat, use_container_width=True)
+
+        # ===== SPC ALARM =====
+        st.markdown("### 🧭 SPC ALARM")
+        if "ml_alarm_hist" not in st.session_state or st.session_state["ml_alarm_hist"].empty:
+            st.info("현재 SPC 룰 위반 알람이 없습니다.")
+        else:
+            hist = st.session_state["ml_alarm_hist"].copy()
+            sel = st.selectbox(
+                "알람 시점",
+                options=list(hist["TIMESTAMP"].dt.strftime("%Y-%m-%d %H:%M:%S")),
+                index=len(hist)-1,
+                key=f"ml_alarm_pick_{sel_line}"
+            )
+            pick_ts = pd.to_datetime(sel)
+            row = hist.loc[hist["TIMESTAMP"]==pick_ts].iloc[0]
+            _ucl_txt = f"{ucl:.4f}" if 'ucl' in locals() and ucl is not None else "-"
+            _lcl_txt = f"{lcl:.4f}" if 'lcl' in locals() and lcl is not None else "-"
+            st.write(f"- **Y**: `{row['Y_Quality']:.6f}`  | **UCL/LCL**: `{_ucl_txt}` / `{_lcl_txt}`")
+            if "RULES" in row and isinstance(row["RULES"], str):
+                st.write(f"- **위반 룰**: `{row['RULES']}`")
+
+            try:
+                exclude = {"TIMESTAMP","DATE","Y_Quality","Y_Class","__source__"}
+                num_cols = [c for c in df_train.columns if c not in exclude and pd.api.types.is_numeric_dtype(df_train[c])]
+                if len(num_cols) > 0:
+                    # 알람 시점 근처 인덱스
+                    if "TIMESTAMP" in df_train.columns and isinstance(pick_ts, pd.Timestamp):
+                        ts_all = pd.to_datetime(df_train["TIMESTAMP"], errors="coerce")
+                        idx0 = int((ts_all - pick_ts).abs().idxmin())
                     else:
-                        st.caption("원인 후보 계산을 위한 수치형 센서 컬럼이 충분하지 않습니다.")
-                except Exception as e:
-                    st.caption(f"원인 후보 계산 스킵: {e}")
-                
+                        idx0 = len(df_train) // 2
 
-                with st.expander("알람 히스토리"):
-                    st.dataframe(hist.sort_values("TIMESTAMP", ascending=False), use_container_width=True, height=220)
-                    _csv = hist.to_csv(index=False).encode("utf-8-sig")
-                    st.download_button("CSV 다운로드", data=_csv, file_name=f"alarm_history_{sel_line}.csv", mime="text/csv")
-               
+                    K_BEFORE, K_AFTER, BASE_SIZE = 5, 5, 20
+                    n = len(df_train)
+                    l = max(0, idx0 - K_BEFORE); r = min(n - 1, idx0 + K_AFTER)
+                    win_df  = df_train.iloc[l:r+1].copy()
+                    base_r  = max(0, l - 1)
+                    base_l  = max(0, base_r - BASE_SIZE + 1)
+                    base_df = df_train.iloc[base_l:base_r+1].copy()
+
+                    out = []
+                    y_win = pd.to_numeric(win_df["Y_Quality"], errors="coerce")
+                    for c in num_cols[:400]:
+                        s_now  = pd.to_numeric(win_df[c],  errors="coerce")
+                        s_base = pd.to_numeric(base_df[c], errors="coerce")
+                        sigma_now  = float(s_now.std(ddof=1))
+                        sigma_base = float(s_base.std(ddof=1)) or 1e-6
+                        var_ratio  = sigma_now / sigma_base if np.isfinite(sigma_now) else np.nan
+                        corr = s_now.corr(y_win) if s_now.notna().sum() > 5 and y_win.notna().sum() > 5 else np.nan
+                        mean_jump = abs(s_now.mean() - s_base.mean())
+                        out.append((c, var_ratio, corr, mean_jump))
+
+                    df_top5 = pd.DataFrame(out, columns=["feature","sigma_ratio","corr_with_y","mean_jump"]).dropna(how="all")
+                    if not df_top5.empty:
+                        df_top5["score1"] = df_top5["sigma_ratio"].clip(0, 5).fillna(0) * df_top5["corr_with_y"].abs().fillna(0)
+                        mj_min, mj_max = df_top5["mean_jump"].min(), df_top5["mean_jump"].max()
+                        df_top5["score_fb"] = (df_top5["mean_jump"] - mj_min) / (mj_max - mj_min + 1e-9)
+                        df_top5["score"] = np.where(df_top5["score1"] > 0, df_top5["score1"], df_top5["score_fb"])
+                        df_top5 = df_top5.sort_values("score", ascending=False).head(5)
+
+                    st.caption(f"index window: [{l}:{r}] (win={len(win_df)}), base: [{base_l}:{base_r}] (base={len(base_df)})")
+
+                    sensor_map = load_sensor_map(sel_line, product) if 'load_sensor_map' in globals() else {}
+                    if not df_top5.empty and sensor_map:
+                        df_top5 = df_top5.copy()
+                        df_top5["feature_name"] = df_top5["feature"].map(sensor_map).fillna(df_top5["feature"])
+                        show_cols = ["feature","feature_name","sigma_ratio","corr_with_y","score"]
+                    else:
+                        show_cols = ["feature","sigma_ratio","corr_with_y","score"]
+
+                    if df_top5.empty:
+                        st.info("해당 창에서 원인 후보가 비었습니다. K_BEFORE/K_AFTER 또는 BASE_SIZE를 키워보세요.")
+                    else:
+                        st.dataframe(df_top5[show_cols], use_container_width=True, height=220)
+                        detected_rule = None
+                        if isinstance(row, pd.Series) and isinstance(row.get("RULES"), str) and len(row["RULES"]) > 0:
+                            detected_rule = row["RULES"].split(",")[0].strip()
+                        st.markdown("### ⚠️ SPC REPORT")
+                        st.info(summarize_alarm_cause(df_top5[["feature","sigma_ratio","corr_with_y","score"]], detected_rule, sensor_map))
+                else:
+                    st.caption("원인 후보 계산을 위한 수치형 센서 컬럼이 충분하지 않습니다.")
+            except Exception as e:
+                st.caption(f"원인 후보 계산 스킵: {e}")
+
+            with st.expander("알람 히스토리"):
+                st.dataframe(hist.sort_values("TIMESTAMP", ascending=False), use_container_width=True, height=220)
+                _csv = hist.to_csv(index=False).encode("utf-8-sig")
+                st.download_button("CSV 다운로드", data=_csv, file_name=f"alarm_history_{sel_line}.csv", mime="text/csv")
+
     except Exception as e:
         st.error(f"Y_Quality 그래프 로드 중 오류: {e}")
-                
 
 # -----------------------------
 # 센서 트렌드
@@ -1734,6 +1427,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
