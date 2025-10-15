@@ -1,7 +1,13 @@
+[server]
+headless = true
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+
 [theme]
 base = "dark"
-primaryColor = "#3e71ceff"          # 메인 포인트 (네온 블루)
-backgroundColor = "#00030aff"       # 전체 배경
-secondaryBackgroundColor = "#01040cff"  # 카드·박스 배경
-textColor = "#FFFFFF"             # 글자색
+primaryColor = "#25c2ff"
+backgroundColor = "#0b1326"
+secondaryBackgroundColor = "#101a30"
+textColor = "#ffffff"
 font = "sans serif"
