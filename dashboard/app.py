@@ -686,23 +686,66 @@ if tab == " 대시보드":
                 st.session_state.alert_c2 = st.session_state.get("alert_c2", 0) + int(cur_cls == 2)
                 st.session_state.alert_last_key = cur_key
 
-                # Cloud에서도 되는 st.toast 사용
-                # ==================== TOAST STACK ====================
-                # 최근 3개까지만 유지
+                # ==================== 알람 스택(최대 3개) + 고정 패널 표시 ====================
+                # 스택 초기화
                 if "toast_stack" not in st.session_state:
-                    st.session_state["toast_stack"] = []
+                    st.session_state.toast_stack = []   # [{"msg": str, "icon": str}]
                 
-                msg = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
+                # 새 알람 1회만 push (너 이미 cur_key로 중복 방지했으니 OK)
+                msg  = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
                 icon = "🛑" if cur_cls == 0 else "⚠️"
                 
-                # 새로운 메시지 추가 (최대 3개)
-                st.session_state["toast_stack"].append((msg, icon))
-                if len(st.session_state["toast_stack"]) > 3:
-                    st.session_state["toast_stack"].pop(0)
+                st.session_state.toast_stack.append({"msg": msg, "icon": icon})
+                st.session_state.toast_stack = st.session_state.toast_stack[-3:]  # 최대 3개 유지
                 
-                # 최신 3개 모두 표시
-                for m, ic in st.session_state["toast_stack"]:
-                    st.toast(m, icon=ic)
+                # (선택) 즉시 알림용 짧은 toast 한 번만 띄우고 끝. 오래 유지되는 건 아래 '고정 패널'
+                st.toast(msg, icon=icon)
+                
+                # ---- 고정(Sticky) 패널로 항상 화면에 표시: 최신이 위, 3개 유지 ----
+                # CSS는 한 번만 주입되도록 key로 구분 (필요하면 페이지 상단 공용 CSS로 이동)
+                st.markdown("""
+                <style>
+                .sticky-toasts {
+                  position: fixed;
+                  right: 16px;
+                  bottom: 16px;            /* ↔ top: 90px 로 바꾸면 상단 고정 */
+                  z-index: 9999;
+                  display: flex;
+                  flex-direction: column-reverse;  /* 최신이 위 */
+                  gap: 8px;
+                }
+                .toast-card {
+                  background: #18243f;
+                  border: 1px solid #2a3b5d;
+                  color: #e6f0ff;
+                  padding: 10px 12px;
+                  border-radius: 10px;
+                  box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+                  font-size: 13px;
+                  line-height: 1.35;
+                  min-width: 260px;
+                  max-width: 420px;
+                }
+                .toast-card .ico { margin-right: 6px; }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                # HTML 캐시해서 불필요한 리렌더로 깜빡임 줄이기
+                if "toast_html_cache" not in st.session_state:
+                    st.session_state.toast_html_cache = ""
+                
+                html = ['<div class="sticky-toasts">']
+                for t in st.session_state.toast_stack:
+                    html.append(f'<div class="toast-card"><span class="ico">{t["icon"]}</span>{t["msg"]}</div>')
+                html.append('</div>')
+                html = "".join(html)
+                
+                if html != st.session_state.toast_html_cache:
+                    st.session_state.toast_html_cache = html
+                    st.markdown(html, unsafe_allow_html=True)
+                else:
+                    # 캐시와 동일해도 고정패널을 그려줘야 하므로 다시 표시
+                    st.markdown(st.session_state.toast_html_cache, unsafe_allow_html=True)
             # ── 알람 KPI + 테이블
             st.markdown("#### 🔔 실시간 경고 알림")
             kcol, tcol = st.columns([0.36, 0.64])
@@ -1440,6 +1483,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
