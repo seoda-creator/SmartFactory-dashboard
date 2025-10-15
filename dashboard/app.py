@@ -686,12 +686,11 @@ if tab == " 대시보드":
                 st.session_state.alert_c2 = st.session_state.get("alert_c2", 0) + int(cur_cls == 2)
                 st.session_state.alert_last_key = cur_key
 
-                # ==================== 알람 스택(최대 3개) + 고정 패널 표시 ====================
                 import time  # 파일 상단 임포트에 추가
 
                 # ==================== TOAST STACK (만료시간 기반) ====================
-                # 유지 시간(초) 조절: 원하는 만큼 길게!
-                TOAST_DURATION_SEC = 25
+                # 유지 시간(초)
+                TOAST_DURATION_SEC = 50
                 
                 if "toast_stack" not in st.session_state:
                     # [{"msg": str, "icon": str, "expires": float}, ...]
@@ -1453,6 +1452,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
