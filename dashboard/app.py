@@ -9,10 +9,21 @@ import time
 from pathlib import Path
 from datetime import datetime
 from streamlit_plotly_events import plotly_events
-# ==== 센서명 매핑 유틸 ====
 import re
+from pathlib import Path
 
-MAPPING_XLSX = r"C:\Users\snskg\OneDrive\Desktop\dashboard\Mapping.xlsx"  
+# === [ 경로 설정: GitHub 배포용] ===
+BASE_DIR = Path(__file__).resolve().parent
+
+# CSV / 데이터 폴더
+TRAIN_DIR = BASE_DIR / "train_ml_imputed"
+TEST_DIR  = BASE_DIR / "test_ml_imputed"
+DATA_DIR  = TRAIN_DIR   # 기존 코드 호환용
+
+# 매핑 엑셀 (Mapping.xlsx)
+MAPPING_XLSX = BASE_DIR / "Mapping.xlsx"
+mapping_fp   = MAPPING_XLSX
+
 
 def _pick_mapping_column(df_map: pd.DataFrame, line: str, product: str|None):
     """엑셀에서 '라인_제품' 열이 있으면 그걸, 없으면 라인으로 시작하는 열 중 우선순위(N>A>기타)로 선택"""
@@ -317,7 +328,6 @@ def spc_flags(series, mean=None, sigma=None):
 # -----------------------------
 # 데이터 로드
 # -----------------------------
-DATA_DIR = Path(r"C:\Users\snskg\OneDrive\Desktop\dashboard\train_ml_imputed")
 
 @st.cache_data(show_spinner=True)
 def load_data(path: Path) -> pd.DataFrame:
@@ -1560,10 +1570,6 @@ elif tab == " 센서 트렌드":
     st.markdown("# 📟 SENSOR INFO  ↩︎")
     st.caption("선택 라인의 매핑된 센서만 필터링, 원시값·이동평균·이동표준편차 표시")
 
-    # ---------- 경로/파일 ----------
-    TRAIN_DIR = Path(r"C:\Users\snskg\OneDrive\Desktop\dashboard\train_ml_imputed")
-    mapping_fp = Path(r"C:\Users\snskg\OneDrive\Desktop\dashboard\Mapping.xlsx")  # 첫열=센서코드, 각 라인 열=센서명(한글)
-
     # ---------- 라인/파일 매핑 ----------
     line_map = {
         "T010305": ("T010305_A_31_ml_ready.csv", "A_31"),
@@ -1726,4 +1732,5 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 # Footer
 # -----------------------------
+
 st.caption("© Smart Factory Dashboard — · build time: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
