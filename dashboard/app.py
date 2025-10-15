@@ -981,6 +981,29 @@ elif tab == " 이상치 탐지":
                 alarm_df["RULES"] = alarm_df[rule_cols].apply(
                     lambda r: ",".join([c for c in rule_cols if r[c]]), axis=1
                 )
+            # ── 알람 히스토리 세션에 적재 (웹에서도 보이도록)
+            if "ml_alarm_hist" not in st.session_state:
+                st.session_state["ml_alarm_hist"] = pd.DataFrame(
+                    columns=["TIMESTAMP", "Y_Quality", "RULES"]
+                )
+            
+            if not alarm_df.empty:
+                if x_is_time:
+                    ts = pd.to_datetime(alarm_df["X"], errors="coerce")
+                else:
+                    ts = pd.Series(pd.NaT, index=alarm_df.index)  # 인덱스 축이면 시간은 NaT
+            
+                hist_add = pd.DataFrame({
+                    "TIMESTAMP": ts,
+                    "Y_Quality": alarm_df["Y_Quality"].values,
+                    "RULES": alarm_df.get("RULES", "")
+                })
+            
+                st.session_state["ml_alarm_hist"] = (
+                    pd.concat([st.session_state["ml_alarm_hist"], hist_add], ignore_index=True)
+                      .drop_duplicates(subset=["TIMESTAMP","Y_Quality"])
+                      .sort_values("TIMESTAMP")
+                )
 
             # (옵션) 히스토리 유지
             if "ml_alarm_hist" not in st.session_state:
@@ -1711,6 +1734,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
