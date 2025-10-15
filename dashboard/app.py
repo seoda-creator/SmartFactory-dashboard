@@ -1,13 +1,4 @@
 # -*- coding: utf-8 -*-
-# app.py 최상단에 추가
-st.markdown("""
-    <style>
-        body, .stApp {
-            background-color: #00030aff !important;
-            color: #eaf2ff !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -696,6 +687,22 @@ if tab == " 대시보드":
                 st.session_state.alert_last_key = cur_key
 
                 # Cloud에서도 되는 st.toast 사용
+                # ==================== TOAST STACK ====================
+                # 최근 3개까지만 유지
+                if "toast_stack" not in st.session_state:
+                    st.session_state["toast_stack"] = []
+                
+                msg = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
+                icon = "🛑" if cur_cls == 0 else "⚠️"
+                
+                # 새로운 메시지 추가 (최대 3개)
+                st.session_state["toast_stack"].append((msg, icon))
+                if len(st.session_state["toast_stack"]) > 3:
+                    st.session_state["toast_stack"].pop(0)
+                
+                # 최신 3개 모두 표시
+                for m, ic in st.session_state["toast_stack"]:
+                    st.toast(m, icon=ic)
                 msg = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
                 st.toast(msg, icon=("🛑" if cur_cls == 0 else "⚠️"))
 
@@ -1436,6 +1443,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
