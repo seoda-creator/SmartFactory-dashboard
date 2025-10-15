@@ -1,4 +1,13 @@
 # -*- coding: utf-8 -*-
+# app.py 최상단에 추가
+st.markdown("""
+    <style>
+        body, .stApp {
+            background-color: #00030aff !important;
+            color: #eaf2ff !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -1427,6 +1436,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
