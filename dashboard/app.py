@@ -687,23 +687,35 @@ if tab == " 대시보드":
                 st.session_state.alert_last_key = cur_key
 
                 # ==================== 알람 스택(최대 3개) + 고정 패널 표시 ====================
-                # Cloud에서도 되는 st.toast 사용
-                # ==================== TOAST STACK ====================
-                # 최근 3개까지만 유지
+                import time  # 파일 상단 임포트에 추가
+
+                # ==================== TOAST STACK (만료시간 기반) ====================
+                # 유지 시간(초) 조절: 원하는 만큼 길게!
+                TOAST_DURATION_SEC = 12
+                
                 if "toast_stack" not in st.session_state:
+                    # [{"msg": str, "icon": str, "expires": float}, ...]
                     st.session_state["toast_stack"] = []
                 
-                msg = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
+                now = time.time()
+                
+                # 새 알람 push (네 로직에서 중복 방지 후 도달)
+                msg  = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
                 icon = "🛑" if cur_cls == 0 else "⚠️"
                 
-                # 새로운 메시지 추가 (최대 3개)
-                st.session_state["toast_stack"].append((msg, icon))
-                if len(st.session_state["toast_stack"]) > 3:
-                    st.session_state["toast_stack"].pop(0)
+                # 스택에 추가(최대 3개 유지)
+                st.session_state["toast_stack"].append({"msg": msg, "icon": icon, "expires": now + TOAST_DURATION_SEC})
+                st.session_state["toast_stack"] = st.session_state["toast_stack"][-3:]
                 
-                # 최신 3개 모두 표시
-                for m, ic in st.session_state["toast_stack"]:
-                    st.toast(m, icon=ic)
+                # 만료되지 않은 토스트만 보여주기 (매 rerun마다 다시 띄워져서 오래 보임)
+                alive = []
+                for t in st.session_state["toast_stack"]:
+                    if t["expires"] > now:
+                        st.toast(t["msg"], icon=t["icon"])
+                        alive.append(t)
+                
+                # 만료된 항목 정리
+                st.session_state["toast_stack"] = alive
             # ── 알람 KPI + 테이블
             st.markdown("#### 🔔 실시간 경고 알림")
             kcol, tcol = st.columns([0.36, 0.64])
@@ -1441,6 +1453,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
