@@ -691,7 +691,7 @@ if tab == " 대시보드":
 
                 # ==================== TOAST STACK (만료시간 기반) ====================
                 # 유지 시간(초) 조절: 원하는 만큼 길게!
-                TOAST_DURATION_SEC = 12
+                TOAST_DURATION_SEC = 25
                 
                 if "toast_stack" not in st.session_state:
                     # [{"msg": str, "icon": str, "expires": float}, ...]
@@ -1453,6 +1453,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
