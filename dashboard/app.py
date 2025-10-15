@@ -703,9 +703,25 @@ if tab == " 대시보드":
                 # 최신 3개 모두 표시
                 for m, ic in st.session_state["toast_stack"]:
                     st.toast(m, icon=ic)
-                msg = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
-                st.toast(msg, icon=("🛑" if cur_cls == 0 else "⚠️"))
-
+                # ==================== 실시간 알람 토스트 스택 ====================
+                import pandas as pd
+                from datetime import datetime
+                
+                # (1) 세션에 스택 없으면 초기화
+                if "toast_stack" not in st.session_state:
+                    st.session_state.toast_stack = []   # [{"msg": str, "icon": str}]
+                
+                # (2) 새 알람 발생 시 추가 (여기에 원래 last_x, last_y, cur_cls 값 들어감)
+                msg  = f"[경보] {pd.to_datetime(last_x).strftime('%m/%d %H:%M')} • 클래스 {cur_cls} • Y={float(last_y):.6f}"
+                icon = "🛑" if cur_cls == 0 else "⚠️"
+                
+                # 스택 추가 + 오래된 것부터 제거
+                st.session_state.toast_stack.append({"msg": msg, "icon": icon})
+                st.session_state.toast_stack = st.session_state.toast_stack[-3:]  # 3개 유지
+                
+                # (3) 항상 현재 스택의 모든 토스트 표시 (최신이 위로 오게 역순 표시)
+                for t in st.session_state.toast_stack[::-1]:
+                    st.toast(t["msg"], icon=t["icon"])
             # ── 알람 KPI + 테이블
             st.markdown("#### 🔔 실시간 경고 알림")
             kcol, tcol = st.columns([0.36, 0.64])
@@ -1443,6 +1459,7 @@ elif tab == " 센서 트렌드":
 # -----------------------------
 st.caption("© Smart Factory Dashboard — · build time: " +
            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 
